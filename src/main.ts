@@ -1,50 +1,30 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { configureBots } from "./config.js";
 import type { Message } from "./contracts.js";
 import { GoalsWorkflow } from "./goals.js";
-import { decodeEvent, PumbleClient, type Credentials } from "./pumble.js";
+import { decodeEvent } from "./pumble.js";
 import { listen } from "./socket.js";
+import { TaskHistory } from "./task-history.js";
 import { TaskWorkflow } from "./tasks.js";
-
-function required(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`Set ${name} before starting the bots`);
-  return value;
-}
-
-function credentials(name: "IT" | "GOALS"): Credentials {
-  return {
-    appId: required(`PUMBLE_${name}_APP_ID`),
-    appKey: required(`PUMBLE_${name}_APP_KEY`),
-    botToken: required(`PUMBLE_${name}_BOT_TOKEN`),
-  };
-}
 
 function logFailure(operation: string, error: unknown): void {
   console.error(`${operation}. ${error instanceof Error ? error.message : "Unknown error"}`);
 }
 
 async function main(): Promise<void> {
-  const workspaceId = required("PUMBLE_WORKSPACE_ID");
-  const timeZone = process.env.TIME_ZONE ?? "Australia/Melbourne";
-  new Intl.DateTimeFormat("en-AU", { timeZone });
-  const hour = Number(process.env.GOALS_HOUR ?? 9);
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23)
-    throw new Error("GOALS_HOUR must be between 0 and 23");
-
-  const taskChannels = new Set(
-    required("TASK_CHANNEL_IDS")
-      .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
-  );
-  if (!taskChannels.size) throw new Error("TASK_CHANNEL_IDS needs a channel ID");
-  const goalsChannel = required("GOALS_CHANNEL_ID");
-  const taskBot = new PumbleClient(credentials("IT"), workspaceId);
-  const goalsBot = new PumbleClient(credentials("GOALS"), workspaceId);
-  const [taskBotId, goalsBotId] = await Promise.all([taskBot.botId(), goalsBot.botId()]);
-  if (taskBotId === goalsBotId) throw new Error("The two Pumble apps need separate bot tokens");
+  const {
+    workspaceId,
+    timeZone,
+    hour,
+    taskChannels,
+    goalsChannel,
+    taskBot,
+    goalsBot,
+    taskBotId,
+    goalsBotId,
+  } = await configureBots(true);
 
   await Promise.all([
     ...[...taskChannels].map((id) => taskBot.verifyChannel(id)),
@@ -65,10 +45,6 @@ async function main(): Promise<void> {
       payload TEXT NOT NULL,
       PRIMARY KEY (bot, id)
     );
-    CREATE TABLE IF NOT EXISTS task_history (
-      channel_id TEXT PRIMARY KEY,
-      scan_from INTEGER NOT NULL
-    );
   `);
   const insert = db.prepare(
     "INSERT OR IGNORE INTO inbox(bot, id, sent_at, payload) VALUES (?, ?, ?, ?)",
@@ -78,10 +54,7 @@ async function main(): Promise<void> {
   const remove = db.prepare("DELETE FROM inbox WHERE bot = ? AND id = ?");
   const tasks = new TaskWorkflow(db, taskBotId, taskChannels, timeZone);
   const goals = new GoalsWorkflow(db, goalsChannel, timeZone, hour);
-  const startHistory = db.prepare("INSERT OR IGNORE INTO task_history VALUES (?, ?)");
-  const scanFrom = db.prepare("SELECT scan_from FROM task_history WHERE channel_id = ?");
-  const advanceHistory = db.prepare("UPDATE task_history SET scan_from = ? WHERE channel_id = ?");
-  for (const id of taskChannels) startHistory.run(id, Date.now());
+  const history = new TaskHistory(db, taskChannels);
 
   const receive = (bot: "it" | "goals", payload: unknown): void => {
     const message = decodeEvent(payload, workspaceId);
@@ -117,15 +90,18 @@ async function main(): Promise<void> {
       nextHistoryScan = now + 60_000;
       await Promise.all(
         [...taskChannels].map(async (channel) => {
-          const from = scanFrom.get(channel)?.scan_from;
-          if (typeof from !== "number") return;
           try {
-            for (const message of await taskBot.taskMessagesSince(channel, from, taskBotId)) {
-              if (message.authorId !== taskBotId && message.authorId !== goalsBotId) {
-                insert.run("it", message.id, message.sentAt, JSON.stringify(message));
-              }
-            }
-            advanceHistory.run(Math.max(from, now - 60_000), channel);
+            await history.scan(
+              taskBot,
+              channel,
+              taskBotId,
+              (message) => {
+                if (message.authorId !== taskBotId && message.authorId !== goalsBotId) {
+                  insert.run("it", message.id, message.sentAt, JSON.stringify(message));
+                }
+              },
+              now,
+            );
           } catch (error) {
             logFailure("Could not check channel history for missed tasks", error);
           }

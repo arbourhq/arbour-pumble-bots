@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 
 mkdirSync("manifests", { recursive: true });
+const socketMode = process.argv.includes("--socket");
 const apps = [
   {
     name: "arbour_it",
@@ -22,12 +23,15 @@ for (const { name, displayName, botTitle, botScopes } of apps) {
     displayName,
     botTitle,
     bot: true,
-    socketMode: true,
+    socketMode,
     shortcuts: [],
     slashCommands: [],
     redirectUrls: [],
     scopes: { botScopes, userScopes: [] },
-    eventSubscriptions: { url: "https://localhost/events", events: ["NEW_MESSAGE"] },
+    eventSubscriptions: {
+      url: "https://localhost/events",
+      events: socketMode ? ["NEW_MESSAGE"] : [],
+    },
   };
   const filename = `manifests/${name}.json`;
   writeFileSync(filename, JSON.stringify(manifest, null, 2) + "\n");

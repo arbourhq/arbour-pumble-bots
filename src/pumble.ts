@@ -125,7 +125,7 @@ export function postBody(text: string): Record<string, unknown> {
 }
 
 export type Credentials = {
-  appId: string;
+  appId?: string;
   appKey: string;
   botToken: string;
 };
@@ -138,6 +138,7 @@ export class PumbleClient implements Pumble {
   ) {}
 
   async connectUrl(): Promise<string> {
+    if (!this.credentials.appId) throw new Error("Socket Mode requires a Pumble app ID");
     const query = new URLSearchParams({ appKey: this.credentials.appKey });
     const result = record(
       await this.read(

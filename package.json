@@ -7,13 +7,17 @@
     "build": "tsc",
     "start": "node --env-file-if-exists=.env dist/main.js",
     "test": "npm run build && node --test dist/*.test.js",
-    "manifests": "node scripts/manifests.mjs"
+    "manifests": "node scripts/manifests.mjs",
+    "start:cloud": "node dist/cloud-run.js"
+  },
+  "dependencies": {
+    "google-auth-library": "11.3.4"
   },
   "devDependencies": {
     "@types/node": "22.19.15",
     "typescript": "5.9.3"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": "22.x"
   }
 }
