@@ -1,20 +1,11 @@
-import { createServer, type ServerResponse } from "node:http";
 import { withCloudState } from "./cloud-state.js";
 import { configureBots } from "./config.js";
 import { GoalsWorkflow } from "./goals.js";
 import { TaskHistory } from "./task-history.js";
 import { TaskWorkflow } from "./tasks.js";
 
-function reply(response: ServerResponse, status: number, message: string): void {
-  response.writeHead(status, {
-    "Content-Type": "text/plain; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  response.end(`${message}\n`);
-}
-
 async function tick(bucketName: string): Promise<boolean> {
-  // Cloud Run can return a timeout before stopping the handler. Bound Pumble calls inside the lease.
+  // Leave time to persist the SQLite checkpoint before the Cloud Run task times out.
   const deadline = AbortSignal.timeout(40_000);
   const boundedFetch: typeof fetch = (input, init) =>
     fetch(input, {
@@ -64,32 +55,14 @@ function report(error: unknown): void {
   }
 }
 
-const port = Number(process.env.PORT ?? 8080);
-const server = createServer((request, response) => {
-  if (request.method === "GET" && request.url === "/healthz") {
-    reply(response, 200, "ok");
-    return;
-  }
-
-  if (request.method !== "POST" || request.url !== "/tick") {
-    reply(response, 404, "not found");
-    return;
-  }
-
+async function main(): Promise<void> {
   const bucket = process.env.PUMBLE_STATE_BUCKET;
-  if (!bucket) {
-    reply(response, 503, "Pumble state storage has not been configured");
-    return;
-  }
+  if (!bucket) throw new Error("Set PUMBLE_STATE_BUCKET before starting the bots");
+  const ran = await tick(bucket);
+  console.log(ran ? "Pumble check complete" : "Another Pumble check is in progress");
+}
 
-  void tick(bucket).then(
-    (ran) => reply(response, 200, ran ? "ok" : "busy"),
-    (error: unknown) => {
-      report(error);
-      reply(response, 503, "Pumble checks failed");
-    },
-  );
+void main().catch((error: unknown) => {
+  report(error);
+  process.exitCode = 1;
 });
-
-server.listen(port, "0.0.0.0", () => console.log("Arbour Pumble Cloud Run service ready"));
-process.once("SIGTERM", () => server.close());

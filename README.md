@@ -16,9 +16,9 @@ Two private custom apps for the Arbour workspace. The bots share a SQLite databa
 
 ## Cloud Run
 
-Run the Docker image with `node dist/cloud-run.js` on an authenticated Cloud Run service. Provide `PUMBLE_STATE_BUCKET` with the name of a private Cloud Storage bucket and give the runtime service account object access to that bucket. The service saves task and reminder state there between requests.
+Run the Docker image with `node dist/cloud-run.js` as a single-task Cloud Run Job. Provide `PUMBLE_STATE_BUCKET` with the name of a private Cloud Storage bucket and give the runtime service account object access to that bucket. The job saves task and reminder state there between runs.
 
-Set Cloud Scheduler to send an authenticated `POST /tick` every minute with an OIDC identity that has Run Invoker on this service. `GET /healthz` checks that the container is accepting requests. Cloud Run uses the Pumble API to pick up tagged tasks and thread replies on each scheduled check.
+Set Cloud Scheduler to execute the job every five minutes using OAuth and a service account with Run Invoker on that job. Each execution uses the Pumble API to pick up tagged tasks and thread replies and send reminders that are due.
 
 ## Local Socket Mode
 
