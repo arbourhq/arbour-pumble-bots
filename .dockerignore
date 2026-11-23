@@ -1,0 +1,5 @@
+.env
+.pumbleapprc
+data
+dist
+node_modules

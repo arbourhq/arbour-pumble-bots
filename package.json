@@ -1,0 +1,19 @@
+{
+  "name": "arbour-pumble-bots",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node --env-file-if-exists=.env dist/main.js",
+    "test": "npm run build && node --test dist/*.test.js",
+    "manifests": "node scripts/manifests.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.15",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

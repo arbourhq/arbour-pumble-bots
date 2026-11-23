@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.pumbleapprc
+.pumblerc
+.vercel/
+data/
+dist/
+node_modules/
+manifests/
+*.sqlite*
