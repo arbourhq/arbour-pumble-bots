@@ -25,7 +25,7 @@ Set Cloud Scheduler to execute the job every five minutes using OAuth and a serv
 
 Pushes to `main` run `npm test`, build the image, push it to `australia-southeast1-docker.pkg.dev/arbourhq/arbour/pumble-bots`, and update the `arbour-pumble-bots` Cloud Run job. The workflow updates the image only, so each job keeps its Cloud Run secrets, settings and schedule.
 
-1. Set up a Google Cloud Workload Identity Federation provider for `https://token.actions.githubusercontent.com`. Map `google.subject=assertion.sub` and `attribute.repository_id=assertion.repository_id`. Restrict the provider with `assertion.repository_owner_id == '312090429' && assertion.repository_id == '1468116178' && assertion.ref == 'refs/heads/main' && assertion.event_name == 'push'`. Grant `roles/iam.workloadIdentityUser` on the deployment service account to `principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/attribute.repository_id/1468116178`. [Google Cloud Workload Identity Federation setup](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines#github-actions)
+1. Set up a Google Cloud Workload Identity Federation provider for `https://token.actions.githubusercontent.com`. Map `google.subject=assertion.sub` and `attribute.repository_id=assertion.repository_id`. Restrict the provider with `assertion.repository_owner_id == '312090429' && assertion.repository_id == '1468116178' && assertion.ref == 'refs/heads/main' && assertion.event_name == 'push' && assertion.workflow_ref == 'arbourhq/arbour-pumble-bots/.github/workflows/deploy.yml@refs/heads/main'`. Grant `roles/iam.workloadIdentityUser` on the deployment service account to `principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/attribute.repository_id/1468116178`. [Google Cloud Workload Identity Federation setup](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines#github-actions)
 2. Give the deployment service account `roles/artifactregistry.writer` on the `arbour` Artifact Registry repository, `roles/run.developer` on the jobs it deploys, and `roles/iam.serviceAccountUser` on their runtime service accounts.
 3. Under **Settings → Secrets and variables → Actions → Variables**, set `GCP_WORKLOAD_IDENTITY_PROVIDER` to the full `projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER` resource name and `GCP_DEPLOY_SERVICE_ACCOUNT` to the deployment service account email. After creating the digest job, set `GCP_DIGEST_JOB` to `arbour-weekly-digest`.
 
@@ -33,7 +33,7 @@ Pushes to `main` run `npm test`, build the image, push it to `australia-southeas
 
 1. Install `manifests/arbour_weekly_digest.json` as a private Pumble app and add its bot to `#daily-updates`. Invite it to each private channel to include. Use the app key and bot token from this app for the digest job.
 2. Have Alex and Ben each authorize **Weekly Digest** in **Configure apps** so the app can read their DMs. Exchange each OAuth authorization code at `https://api-ga.pumble.com/oauth2/access` using form fields `client-id`, `client-secret`, and `code`. The manifest uses a localhost redirect. The authorization code is in the redirected address. Save each response's `userId` and `accessToken` for the reader secret. [Pumble OAuth authorization](https://cake-com.github.io/pumble-node-sdk/authorization.html)
-3. In Secret Manager, create the four secrets below. The runtime service account needs `roles/secretmanager.secretAccessor` on these secrets and object access to the state bucket. Use the `accessToken` from each user in `PUMBLE_DIGEST_DM_READERS` and add the OpenAI API key when ready. [Cloud Run job secrets](https://docs.cloud.google.com/run/docs/configuring/jobs/secrets)
+3. In Secret Manager, add a version to each of the four secrets below. Create the secret first if it is missing. The runtime service account needs `roles/secretmanager.secretAccessor` on these secrets and object access to the state bucket. Use the `accessToken` from each user in `PUMBLE_DIGEST_DM_READERS` and add the OpenAI API key when ready. [Cloud Run job secrets](https://docs.cloud.google.com/run/docs/configuring/jobs/secrets)
 
 | Job environment variable | Secret value |
 | --- | --- |
@@ -64,6 +64,19 @@ Pushes to `main` run `npm test`, build the image, push it to `australia-southeas
    ```
 
 The digest sends accessible message text to the OpenAI Responses API with `gpt-6.2-sol` and `store: false`. The prompt asks for shareable work outcomes from private sources and omits quotes and private conversation details from the digest. The job persists only delivery state. [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data)
+
+### Activate the staged production job
+
+The production job and its paused Scheduler trigger are both named `arbour-weekly-digest`. After adding the OpenAI key and all three Pumble credential values, attach the enabled secret versions to the existing job. This example assumes version `1` for all four secrets.
+
+```sh
+gcloud run jobs update arbour-weekly-digest \
+  --project=arbourhq --region=australia-southeast1 \
+  --update-secrets='PUMBLE_DIGEST_APP_KEY=PUMBLE_DIGEST_APP_KEY:1,PUMBLE_DIGEST_BOT_TOKEN=PUMBLE_DIGEST_BOT_TOKEN:1,PUMBLE_DIGEST_DM_READERS=PUMBLE_DIGEST_DM_READERS:1,OPENAI_API_KEY=OPENAI_API_KEY:1'
+
+gcloud scheduler jobs resume arbour-weekly-digest \
+  --project=arbourhq --location=australia-southeast1
+```
 
 ## Local Socket Mode
 
