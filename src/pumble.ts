@@ -80,6 +80,7 @@ function readMessage(
   workspaceId: string,
   channelId: string,
   threadId?: string,
+  includeAppMessages = false,
 ): Message | undefined {
   const id = string(row.id);
   const authorId = string(row.author);
@@ -88,8 +89,9 @@ function readMessage(
     id === threadId ||
     !authorId ||
     row.deleted ||
+    row.ephemeral ||
     row.subtype ||
-    row.authorAppId ||
+    (!includeAppMessages && row.authorAppId) ||
     row.workspaceId !== workspaceId ||
     row.channelId !== channelId ||
     typeof row.timestampMilli !== "number" ||
@@ -130,12 +132,27 @@ export type Credentials = {
   botToken: string;
 };
 
+export type DigestChannel = {
+  id: string;
+  name: string;
+  memberIds: readonly string[];
+  visibility: "channel" | "private";
+};
+
 export class PumbleClient implements Pumble {
   constructor(
     private readonly credentials: Credentials,
     private readonly workspaceId: string,
     private readonly request: typeof fetch = fetch,
   ) {}
+
+  asUser(accessToken: string): PumbleClient {
+    return new PumbleClient(
+      { appKey: this.credentials.appKey, botToken: accessToken },
+      this.workspaceId,
+      this.request,
+    );
+  }
 
   async connectUrl(): Promise<string> {
     if (!this.credentials.appId) throw new Error("Socket Mode requires a Pumble app ID");
@@ -176,15 +193,12 @@ export class PumbleClient implements Pumble {
   async members(channelId: string): Promise<readonly string[]> {
     const [members, users] = await Promise.all([
       this.channelUsers(channelId),
-      this.read("/v1/workspaceUsers", "list workspace users"),
+      this.workspaceUsers(),
     ]);
-    if (!Array.isArray(users)) throw new Error("Pumble did not return workspace users");
     return users
-      .map(record)
       .filter(
         (user) =>
           members.has(string(user.id)) &&
-          user.workspaceId === this.workspaceId &&
           user.status === "ACTIVATED" &&
           !user.isPumbleBot &&
           !user.isAddonBot,
@@ -192,18 +206,129 @@ export class PumbleClient implements Pumble {
       .map((user) => string(user.id));
   }
 
+  async workspaceUserNames(): Promise<ReadonlyMap<string, string>> {
+    const names = new Map<string, string>();
+    for (const user of await this.workspaceUsers()) {
+      const id = string(user.id);
+      const name = string(user.name);
+      if (id && name) names.set(id, name);
+    }
+    return names;
+  }
+
+  async digestChannels(direct = false): Promise<DigestChannel[]> {
+    const types = direct ? "DIRECT" : "PUBLIC,PRIVATE";
+    const userId = direct ? await this.botId() : undefined;
+    const rows = await this.read(`/v1/channels?types=${types}`, "list digest channels");
+    if (!Array.isArray(rows)) throw new Error("Pumble did not return digest channels");
+
+    return rows.flatMap((entry: unknown): DigestChannel[] => {
+      const info = record(entry);
+      const channel = record(info.channel);
+      const id = string(channel.id);
+      if (!id || channel.workspaceId !== this.workspaceId) return [];
+
+      const type = channel.channelType;
+      const memberIds = texts(info.users);
+      const allowed = userId
+        ? type === "DIRECT" && memberIds.includes(userId)
+        : type === "PUBLIC" || (type === "PRIVATE" && channel.isMember === true);
+      if (!allowed) return [];
+
+      return [
+        {
+          id,
+          name: string(channel.name),
+          memberIds,
+          visibility: type === "PUBLIC" ? "channel" : "private",
+        },
+      ];
+    });
+  }
+
+  async digestMessages(
+    channelIds: readonly string[],
+    start: number,
+    end: number,
+  ): Promise<Message[]> {
+    const pageSize = 50;
+    const channelBatchSize = 50;
+    const messages: Message[] = [];
+    // Searching by the reply's timestamp includes replies to threads started before this week.
+    for (let index = 0; index < channelIds.length; index += channelBatchSize) {
+      const inChannels = channelIds.slice(index, index + channelBatchSize);
+      const allowed = new Set(inChannels);
+      const seen = new Set<string>();
+      let skip = 0;
+      for (;;) {
+        const page = record(
+          await this.read("/v1/messages/search", "search digest history", true, {
+            in: inChannels,
+            afterTs: Math.max(1, start - 1),
+            beforeTs: end,
+            fromMyChannelsOnly: false,
+          fromHumanOnly: false,
+            strategy: "NEWEST",
+            limit: pageSize,
+            skip,
+          }),
+        );
+        if (!Array.isArray(page.content) || typeof page.hasMore !== "boolean") {
+          throw new Error("Pumble did not return a digest search page");
+        }
+
+        const previousCount = seen.size;
+        for (const entry of page.content) {
+          const row = record(entry);
+          const id = string(row.id);
+          const channelId = string(row.channelId);
+          if (!id || !allowed.has(channelId) || seen.has(id)) continue;
+          seen.add(id);
+          const threadId = string(record(row.threadReplyInfo).rootId) || undefined;
+          const message = readMessage(row, this.workspaceId, channelId, threadId, true);
+          if (!message || message.sentAt < start || message.sentAt >= end) continue;
+
+          const files = Array.isArray(row.files) ? row.files.map(record) : [];
+          const attachments = files.map((file) => `[File ${string(file.name) || "attached"}]`);
+          const text = [message.text, ...attachments].filter(Boolean).join("\n");
+          messages.push({ ...message, text });
+        }
+
+        if (!page.hasMore) break;
+        if (seen.size === previousCount) {
+          throw new Error("Pumble digest search pagination did not advance");
+        }
+        skip += page.content.length;
+      }
+    }
+    return messages;
+  }
+
+  async hasDigestPost(
+    channelId: string,
+    authorId: string,
+    header: string,
+    since: number,
+  ): Promise<boolean> {
+    const messages = await this.channelHistory(
+      channelId,
+      (row) => {
+        if (row.threadReplyInfo || row.author !== authorId) return;
+        const message = readMessage(row, this.workspaceId, channelId, undefined, true);
+        if (message?.text.split("\n", 1)[0] === header) return message;
+      },
+      since,
+    );
+    return messages.length > 0;
+  }
+
   async taskMessagesSince(
     channelId: string,
     since: number,
     botId: string,
   ): Promise<readonly Message[]> {
-    const path = `/v1/channels/${segment(channelId)}/messages`;
-    return this.history(
-      async (query) => {
-        const page = record(await this.read(`${path}?${query}`, "read channel history"));
-        if (!Array.isArray(page.messages)) throw new Error("Pumble did not return channel history");
-        return { rows: page.messages.map(record), hasMore: page.hasMoreBefore === true };
-      },
+    return this.channelHistory(
+      channelId,
       (row) => {
         if (row.threadReplyInfo) return;
         const message = readMessage(row, this.workspaceId, channelId);
@@ -222,6 +347,23 @@ export class PumbleClient implements Pumble {
         return { rows: rows.map(record), hasMore: rows.length >= 50 };
       },
       (row) => readMessage(row, this.workspaceId, channelId, threadId),
+    );
+  }
+
+  private channelHistory(
+    channelId: string,
+    parse: (row: Record<string, unknown>) => Message | undefined,
+    since: number,
+  ): Promise<Message[]> {
+    const path = `/v1/channels/${segment(channelId)}/messages`;
+    return this.history(
+      async (query) => {
+        const page = record(await this.read(`${path}?${query}`, "read channel history"));
+        if (!Array.isArray(page.messages)) throw new Error("Pumble did not return channel history");
+        return { rows: page.messages.map(record), hasMore: page.hasMoreBefore === true };
+      },
+      parse,
+      since,
     );
   }
 
@@ -272,6 +414,12 @@ export class PumbleClient implements Pumble {
       throw new Error(`Pumble bot needs to join the active channel ${channelId}`);
     }
     return new Set(texts(data.users));
+  }
+
+  private async workspaceUsers(): Promise<Record<string, unknown>[]> {
+    const rows = await this.read("/v1/workspaceUsers", "list workspace users");
+    if (!Array.isArray(rows)) throw new Error("Pumble did not return workspace users");
+    return rows.map(record).filter((user) => user.workspaceId === this.workspaceId);
   }
 
   private async read(

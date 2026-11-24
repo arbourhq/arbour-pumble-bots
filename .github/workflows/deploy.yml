@@ -1,0 +1,68 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cloud-run-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT: arbourhq
+  GCP_REGION: australia-southeast1
+  GCP_JOB: arbour-pumble-bots
+  GCP_DIGEST_JOB: ${{ vars.GCP_DIGEST_JOB }}
+  IMAGE: australia-southeast1-docker.pkg.dev/arbourhq/arbour/pumble-bots:${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - name: Build image
+        run: docker build --tag "$IMAGE" .
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Push image to Artifact Registry
+        run: |
+          gcloud auth configure-docker "${IMAGE%%/*}" --quiet
+          docker push "$IMAGE"
+
+      - name: Update Cloud Run jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+            echo 'Skipping deployment because main has moved on.'
+            exit 0
+          fi
+
+          for job in "$GCP_JOB" "$GCP_DIGEST_JOB"; do
+            [[ -n "$job" ]] || continue
+            gcloud run jobs update "$job" --image "$IMAGE" \
+              --project "$GCP_PROJECT" --region "$GCP_REGION" --quiet
+          done
