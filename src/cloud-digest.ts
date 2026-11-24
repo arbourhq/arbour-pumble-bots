@@ -7,16 +7,18 @@ import { generateDigest } from "./digest-summary.js";
 import { deliverDigest, type DigestState } from "./digest.js";
 import { PumbleClient } from "./pumble.js";
 
-function dmReaders(): { userId: string; token: string }[] {
+const digestHeading = "Weekly update | ";
+
+function readerCredentials(): { userId: string; token: string }[] {
   const settings = required("PUMBLE_DIGEST_DM_READERS");
-  const invalid = new Error("PUMBLE_DIGEST_DM_READERS needs a JSON array of distinct userId and token pairs");
+  const invalid = new Error("PUMBLE_DIGEST_DM_READERS needs a non-empty JSON array of distinct userId and token pairs");
   let entries: unknown;
   try {
     entries = JSON.parse(settings);
   } catch {
     throw invalid;
   }
-  if (!Array.isArray(entries)) throw invalid;
+  if (!Array.isArray(entries) || !entries.length) throw invalid;
   const ids = new Set<string>();
   return entries.map((entry: unknown) => {
     if (
@@ -41,7 +43,7 @@ async function main(): Promise<void> {
   const { start, end } = weeklyDigestWindow(Date.now(), timeZone);
   const date = new Intl.DateTimeFormat("en-AU", { timeZone, dateStyle: "medium" });
   const period = `${date.format(start)} to ${date.format(end)}`;
-  const header = `Weekly update | ${period}`;
+  const header = `${digestHeading}${period}`;
 
   // Leave time to release the lease and checkpoint before the 15-minute job timeout.
   const deadline = AbortSignal.timeout(14 * 60_000);
@@ -51,7 +53,7 @@ async function main(): Promise<void> {
       signal: init?.signal ? AbortSignal.any([deadline, init.signal]) : deadline,
     });
   const bot = new PumbleClient(
-    { appKey: required("PUMBLE_DIGEST_APP_KEY"), botToken: required("PUMBLE_DIGEST_BOT_TOKEN") },
+    { appKey: required("PUMBLE_GOALS_APP_KEY"), botToken: required("PUMBLE_GOALS_BOT_TOKEN") },
     workspaceId,
     boundedFetch,
   );
@@ -76,14 +78,16 @@ async function main(): Promise<void> {
     prepare: async () => {
       const key = required("OPENAI_API_KEY");
       await bot.verifyChannel(channelId);
-      const readers = await Promise.all(dmReaders().map(async ({ userId, token }) => {
-        const reader = bot.asUser(token);
-        if (userId === botId || (await reader.botId()) !== userId)
+      const readers = await Promise.all(readerCredentials().map(async ({ userId, token }) => {
+        const client = bot.asUser(token);
+        if (userId === botId || (await client.botId()) !== userId)
           throw new Error("A Pumble digest token does not match its configured user");
-        return reader;
+        return { client, userId };
       }));
       const messages = await collectDigestHistory(bot, readers, start, end);
-      const sources = messages.filter(({ authorId }) => authorId !== botId);
+      const sources = messages.filter(({ authorId, text }) =>
+        authorId !== botId || !text.startsWith(digestHeading),
+      );
       const body = await generateDigest(key, sources, period, boundedFetch);
       return `${header}\n\n${body}`;
     },

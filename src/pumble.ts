@@ -136,7 +136,7 @@ export type DigestChannel = {
   id: string;
   name: string;
   memberIds: readonly string[];
-  visibility: "channel" | "private";
+  type: "PUBLIC" | "PRIVATE" | "DIRECT";
 };
 
 export class PumbleClient implements Pumble {
@@ -216,10 +216,8 @@ export class PumbleClient implements Pumble {
     return names;
   }
 
-  async digestChannels(direct = false): Promise<DigestChannel[]> {
-    const types = direct ? "DIRECT" : "PUBLIC,PRIVATE";
-    const userId = direct ? await this.botId() : undefined;
-    const rows = await this.read(`/v1/channels?types=${types}`, "list digest channels");
+  async digestChannels(userId: string): Promise<DigestChannel[]> {
+    const rows = await this.read("/v1/channels?types=PUBLIC,PRIVATE,DIRECT", "list digest channels");
     if (!Array.isArray(rows)) throw new Error("Pumble did not return digest channels");
 
     return rows.flatMap((entry: unknown): DigestChannel[] => {
@@ -229,20 +227,12 @@ export class PumbleClient implements Pumble {
       if (!id || channel.workspaceId !== this.workspaceId) return [];
 
       const type = channel.channelType;
+      if (type !== "PUBLIC" && type !== "PRIVATE" && type !== "DIRECT") return [];
       const memberIds = texts(info.users);
-      const allowed = userId
-        ? type === "DIRECT" && memberIds.includes(userId)
-        : type === "PUBLIC" || (type === "PRIVATE" && channel.isMember === true);
-      if (!allowed) return [];
+      if (type === "PRIVATE" && channel.isMember !== true) return [];
+      if (type === "DIRECT" && !memberIds.includes(userId)) return [];
 
-      return [
-        {
-          id,
-          name: string(channel.name),
-          memberIds,
-          visibility: type === "PUBLIC" ? "channel" : "private",
-        },
-      ];
+      return [{ id, name: string(channel.name), memberIds, type }];
     });
   }
 
@@ -267,7 +257,7 @@ export class PumbleClient implements Pumble {
             afterTs: Math.max(1, start - 1),
             beforeTs: end,
             fromMyChannelsOnly: false,
-          fromHumanOnly: false,
+            fromHumanOnly: false,
             strategy: "NEWEST",
             limit: pageSize,
             skip,

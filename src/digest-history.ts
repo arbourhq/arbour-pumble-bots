@@ -4,59 +4,59 @@ import type { DigestChannel, PumbleClient } from "./pumble.js";
 export type DigestMessage = Message & {
   author: string;
   conversation: string;
-  visibility: DigestChannel["visibility"];
+  visibility: "channel" | "private";
 };
 
 export async function collectDigestHistory(
   bot: PumbleClient,
-  dmReaders: readonly PumbleClient[],
+  readers: readonly { client: PumbleClient; userId: string }[],
   start: number,
   end: number,
 ): Promise<DigestMessage[]> {
-  const [names, workspaceChannels, directChannels] = await Promise.all([
+  if (!readers.length) throw new Error("Configure at least one Pumble digest reader");
+
+  const [names, histories] = await Promise.all([
     bot.workspaceUserNames(),
-    bot.digestChannels(),
-    Promise.all(dmReaders.map((reader) => reader.digestChannels(true))),
+    Promise.all(
+      readers.map(async ({ client, userId }) => {
+        const channels = await client.digestChannels(userId);
+        const channelIds = [...new Set(channels.map(({ id }) => id))];
+        return { channels, messages: await client.digestMessages(channelIds, start, end) };
+      }),
+    ),
   ]);
-  const claimed = new Set<string>();
-  const sources = [
-    { reader: bot, channels: workspaceChannels, direct: false },
-    ...dmReaders.map((reader, index) => ({ reader, channels: directChannels[index], direct: true })),
-  ].map(({ reader, channels, direct }) => {
-    const conversations = new Map<string, { name: string; visibility: DigestMessage["visibility"] }>();
+
+  const conversations = new Map<string, DigestChannel>();
+  const combined = new Map<string, Message>();
+  for (const { channels, messages } of histories) {
     for (const channel of channels) {
-      if (claimed.has(channel.id)) continue;
-      claimed.add(channel.id);
-      const name = direct
-        ? `Direct message with ${channel.memberIds.map((id) => names.get(id) ?? id).join(", ")}`
-        : `#${channel.name || channel.id}`;
-      conversations.set(channel.id, { name, visibility: channel.visibility });
+      const previous = conversations.get(channel.id);
+      if (!previous || (previous.type === "PUBLIC" && channel.type !== "PUBLIC")) {
+        conversations.set(channel.id, channel);
+      }
     }
-    return { reader, conversations };
-  });
+    // Participants can have different history in the same group DM.
+    for (const message of messages) {
+      const key = `${message.channelId}\0${message.id}`;
+      if (!combined.has(key)) combined.set(key, message);
+    }
+  }
 
-  const messages = await Promise.all(
-    sources.map(async ({ reader, conversations }) => {
-      const rows = await reader.digestMessages([...conversations.keys()], start, end);
-      return rows.flatMap((message): DigestMessage[] => {
-        const channel = conversations.get(message.channelId);
-        if (!channel) return [];
-        const text = message.text.replace(
-          /<<@([A-Za-z0-9_-]+)>>/g,
-          (_, id: string) => `@${names.get(id) ?? id}`,
-        );
-        return [
-          {
-            ...message,
-            author: names.get(message.authorId) ?? message.authorId,
-            conversation: channel.name,
-            text,
-            visibility: channel.visibility,
-          },
-        ];
-      });
-    }),
-  );
-
-  return messages.flat().sort((a, b) => a.sentAt - b.sentAt || a.id.localeCompare(b.id));
+  const messages: DigestMessage[] = [];
+  for (const message of combined.values()) {
+    const channel = conversations.get(message.channelId);
+    if (!channel) continue;
+    const conversation = channel.type === "DIRECT"
+      ? `Direct message with ${channel.memberIds.map((id) => names.get(id) ?? id).join(", ")}`
+      : `#${channel.name || channel.id}`;
+    const text = message.text.replace(/<<@([A-Za-z0-9_-]+)>>/g, (_, id: string) => `@${names.get(id) ?? id}`);
+    messages.push({
+      ...message,
+      author: names.get(message.authorId) ?? message.authorId,
+      conversation,
+      text,
+      visibility: channel.type === "PUBLIC" ? "channel" : "private",
+    });
+  }
+  return messages.sort((a, b) => a.sentAt - b.sentAt || a.id.localeCompare(b.id));
 }

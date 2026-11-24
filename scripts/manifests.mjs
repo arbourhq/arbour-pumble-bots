@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 
 mkdirSync("manifests", { recursive: true });
-const defaultSocketMode = process.argv.includes("--socket");
+const socketMode = process.argv.includes("--socket");
 const apps = [
   {
     name: "arbour_it",
@@ -14,23 +14,12 @@ const apps = [
     displayName: "Weekly Goals",
     botTitle: "Ask for weekly goals and progress updates",
     botScopes: ["channels:read", "messages:read", "messages:write", "users:list"],
-  },
-  {
-    name: "arbour_weekly_digest",
-    displayName: "Weekly Digest",
-    botTitle: "Summarise the week in daily updates",
-    botScopes: ["channels:list", "channels:read", "messages:read", "messages:write", "users:list"],
-    userScopes: ["channels:list", "channels:read", "messages:read"],
+    userScopes: ["channels:list", "messages:read"],
     redirectUrls: ["https://localhost/pumble-digest"],
-    socketMode: false,
   },
 ];
 
-for (const app of apps) {
-  const {
-    name, displayName, botTitle, botScopes,
-    userScopes = [], redirectUrls = [], socketMode = defaultSocketMode,
-  } = app;
+for (const { name, displayName, botTitle, botScopes, userScopes = [], redirectUrls = [] } of apps) {
   const manifest = {
     name,
     displayName,
