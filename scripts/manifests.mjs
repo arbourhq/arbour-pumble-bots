@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 
 mkdirSync("manifests", { recursive: true });
-const socketMode = process.argv.includes("--socket");
+const defaultSocketMode = process.argv.includes("--socket");
 const apps = [
   {
     name: "arbour_it",
@@ -15,9 +15,22 @@ const apps = [
     botTitle: "Ask for weekly goals and progress updates",
     botScopes: ["channels:read", "messages:read", "messages:write", "users:list"],
   },
+  {
+    name: "arbour_weekly_digest",
+    displayName: "Weekly Digest",
+    botTitle: "Summarise the week in daily updates",
+    botScopes: ["channels:list", "channels:read", "messages:read", "messages:write", "users:list"],
+    userScopes: ["channels:list", "channels:read", "messages:read"],
+    redirectUrls: ["https://localhost/pumble-digest"],
+    socketMode: false,
+  },
 ];
 
-for (const { name, displayName, botTitle, botScopes } of apps) {
+for (const app of apps) {
+  const {
+    name, displayName, botTitle, botScopes,
+    userScopes = [], redirectUrls = [], socketMode = defaultSocketMode,
+  } = app;
   const manifest = {
     name,
     displayName,
@@ -26,8 +39,8 @@ for (const { name, displayName, botTitle, botScopes } of apps) {
     socketMode,
     shortcuts: [],
     slashCommands: [],
-    redirectUrls: [],
-    scopes: { botScopes, userScopes: [] },
+    redirectUrls,
+    scopes: { botScopes, userScopes },
     eventSubscriptions: {
       url: "https://localhost/events",
       events: socketMode ? ["NEW_MESSAGE"] : [],

@@ -84,6 +84,21 @@ function dateAfter(clock: LocalTime, days: number): LocalTime {
   };
 }
 
+export function weeklyDigestWindow(now: number, timeZone: string): { start: number; end: number } {
+  const format = formatter(timeZone);
+  const cutoff = { ...localTime(now, format), hour: 17, minute: 0 };
+  const daysSinceFriday = (new Date(wallTime(cutoff)).getUTCDay() + 2) % 7;
+  const friday = dateAfter(cutoff, -daysSinceFriday);
+  const fridayEnd = toTimestamp(friday, format);
+  if (fridayEnd === undefined) throw new Error("Could not determine the Friday digest cutoff");
+
+  const endDate = fridayEnd <= now ? friday : dateAfter(friday, -7);
+  const start = toTimestamp(dateAfter(endDate, -7), format);
+  const end = toTimestamp(endDate, format);
+  if (start === undefined || end === undefined) throw new Error("Could not determine the digest week");
+  return { start, end };
+}
+
 export function parseDeadline(
   value: string,
   reference: number,

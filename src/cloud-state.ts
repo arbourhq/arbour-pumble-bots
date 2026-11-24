@@ -6,8 +6,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { GoogleAuth } from "google-auth-library";
 
-const leasePath = "arbour-pumble-bots/tick-lease.json";
-const statePath = "arbour-pumble-bots/state.sqlite";
+const stateFiles = {
+  bots: { leasePath: "arbour-pumble-bots/tick-lease.json", statePath: "arbour-pumble-bots/state.sqlite" },
+  digest: {
+    leasePath: "arbour-pumble-bots/digest-lease.json",
+    statePath: "arbour-pumble-bots/digest.sqlite",
+  },
+};
 const leaseDuration = 90_000;
 const requestTimeout = 5_000;
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/devstorage.read_write"] });
@@ -122,7 +127,7 @@ function leaseDetails(contents: Buffer): Omit<Lease, "generation"> {
   return { owner: value.owner, expiresAt: value.expiresAt };
 }
 
-async function acquire(objects: CloudObjects): Promise<Lease | null> {
+async function acquire(objects: CloudObjects, leasePath: string): Promise<Lease | null> {
   const existing = await objects.read(leasePath);
   if (existing && leaseDetails(existing.contents).expiresAt > Date.now()) return null;
 
@@ -148,8 +153,10 @@ export async function withCloudState(
   run: (db: DatabaseSync, checkpoint: () => Promise<void>) => Promise<void>,
   bucketName: string,
   objects: CloudObjects = cloudObjects(bucketName),
+  workload: keyof typeof stateFiles = "bots",
 ): Promise<boolean> {
-  const lease = await acquire(objects);
+  const { leasePath, statePath } = stateFiles[workload];
+  const lease = await acquire(objects, leasePath);
   if (!lease) return false;
   const { expiresAt, generation: leaseGeneration } = lease;
 

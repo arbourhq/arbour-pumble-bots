@@ -1,6 +1,6 @@
 import { PumbleClient } from "./pumble.js";
 
-function required(name: string): string {
+export function required(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Set ${name} before starting the bots`);
   return value;
